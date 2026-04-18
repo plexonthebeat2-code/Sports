@@ -51,10 +51,47 @@ def fmt_hour(h):
 
 
 def ou_result(total_goals, line):
-    """Return 'Over', 'Under', or 'Push'."""
-    if total_goals > line:   return "Over"
-    if total_goals < line:   return "Under"
+    if total_goals > line:  return "Over"
+    if total_goals < line:  return "Under"
     return "Push"
+
+
+def _print_ou_table(games, line):
+    by_hour = defaultdict(list)
+    for g in games:
+        by_hour[g["start_hour_et"]].append(g)
+
+    col_w  = 9
+    lw     = 8
+    header = f"{'Start':<{lw}}{'Over':>{col_w}}{'Under':>{col_w}}{'Push':>{col_w}}{'Total':>{col_w}}  {'Over%':>6}"
+    print(f"\n  Line {line}")
+    print("  " + "─" * (len(header) - 2))
+    print("  " + header)
+    print("  " + "─" * (len(header) - 2))
+
+    totals = {"Over": 0, "Under": 0, "Push": 0, "n": 0}
+    for sh in sorted(by_hour):
+        res = defaultdict(int)
+        for g in by_hour[sh]:
+            res[ou_result(g["total_goals"], line)] += 1
+        n        = len(by_hour[sh])
+        over_pct = 100 * res["Over"] / n if n else 0
+        print(
+            "  " + f"{fmt_hour(sh):<{lw}}"
+            f"{res['Over']:>{col_w}}{res['Under']:>{col_w}}"
+            f"{res['Push']:>{col_w}}{n:>{col_w}}  {over_pct:>5.1f}%"
+        )
+        for k in ("Over", "Under", "Push"):
+            totals[k] += res[k]
+        totals["n"] += n
+
+    print("  " + "─" * (len(header) - 2))
+    op = 100 * totals["Over"] / totals["n"] if totals["n"] else 0
+    print(
+        "  " + f"{'All':<{lw}}"
+        f"{totals['Over']:>{col_w}}{totals['Under']:>{col_w}}"
+        f"{totals['Push']:>{col_w}}{totals['n']:>{col_w}}  {op:>5.1f}%"
+    )
 
 
 def main():
@@ -103,61 +140,27 @@ def main():
         })
 
     print(f"Day games with scores: {len(games)}")
+    sat = [g for g in games if datetime.strptime(g["date"], "%Y-%m-%d").weekday() == 5]
+    sun = [g for g in games if datetime.strptime(g["date"], "%Y-%m-%d").weekday() == 6]
+    print(f"  Saturdays: {len(sat)}  |  Sundays: {len(sun)}")
     print()
 
     LINES = [5.5, 6.0, 6.5]
 
-    for line in LINES:
-        label = f"O/U Line  {line}"
-        print("─" * 60)
-        print(f"  {label}")
-        print("─" * 60)
-
-        # Group by start hour
-        by_hour = defaultdict(list)
-        for g in games:
-            by_hour[g["start_hour_et"]].append(g)
-
-        col_w = 9
-        lw    = 8
-        corner = "Start"
-        header = f"{corner:<{lw}}{'Over':>{col_w}}{'Under':>{col_w}}{'Push':>{col_w}}{'Total':>{col_w}}  {'Over%':>6}"
-        print(header)
-        print("─" * len(header))
-
-        totals = {"Over": 0, "Under": 0, "Push": 0, "n": 0}
-
-        for sh in sorted(by_hour.keys()):
-            hour_games = by_hour[sh]
-            res = defaultdict(int)
-            for g in hour_games:
-                r = ou_result(g["total_goals"], line)
-                res[r] += 1
-            n         = len(hour_games)
-            over_pct  = 100 * res["Over"] / n if n else 0
-            print(
-                f"{fmt_hour(sh):<{lw}}"
-                f"{res['Over']:>{col_w}}"
-                f"{res['Under']:>{col_w}}"
-                f"{res['Push']:>{col_w}}"
-                f"{n:>{col_w}}"
-                f"  {over_pct:>5.1f}%"
-            )
-            for k in ("Over", "Under", "Push"):
-                totals[k] += res[k]
-            totals["n"] += n
-
-        print("─" * len(header))
-        overall_over_pct = 100 * totals["Over"] / totals["n"] if totals["n"] else 0
-        print(
-            f"{'All':<{lw}}"
-            f"{totals['Over']:>{col_w}}"
-            f"{totals['Under']:>{col_w}}"
-            f"{totals['Push']:>{col_w}}"
-            f"{totals['n']:>{col_w}}"
-            f"  {overall_over_pct:>5.1f}%"
-        )
+    for day_label, subset in [("SATURDAY", sat), ("SUNDAY", sun)]:
+        print("=" * 60)
+        print(f"  {day_label}  ({len(subset)} games)")
+        print("=" * 60)
+        for line in LINES:
+            _print_ou_table(subset, line)
         print()
+
+    print("=" * 60)
+    print(f"  ALL DAY GAMES  ({len(games)} games)")
+    print("=" * 60)
+    for line in LINES:
+        _print_ou_table(games, line)
+    print()
 
     # ── Detailed breakdown for most common line (6.0) ────────────────────────
     print("─" * 60)
