@@ -1,7 +1,13 @@
 """
-NHL Day Games: Start Time vs Total Goals Scored
+NHL Day Games: Over/Under Results by Start Time
 Real schedule + score data from sportsdataverse/fastRhockey-data
 Seasons: 2021-22, 2022-23, 2023-24
+
+Since per-game O/U lines aren't freely available, we evaluate against
+the three most common NHL totals: 5.5 · 6.0 · 6.5
+  Over : total goals > line
+  Under: total goals < line
+  Push : total goals == line (6.0 line only)
 """
 
 import requests
@@ -15,13 +21,11 @@ SCHEDULE_BASE = (
     "https://raw.githubusercontent.com/sportsdataverse/"
     "fastRhockey-data/main/nhl/schedules/csv/"
 )
-
 SEASONS = {"2022": "2021-22", "2023": "2022-23", "2024": "2023-24"}
 
 
 def download_schedule(year):
-    url = SCHEDULE_BASE + f"nhl_schedule_{year}.csv"
-    r = requests.get(url, timeout=20)
+    r = requests.get(SCHEDULE_BASE + f"nhl_schedule_{year}.csv", timeout=20)
     r.raise_for_status()
     return list(csv.DictReader(io.StringIO(r.text)))
 
@@ -43,12 +47,18 @@ def utc_to_et(dt):
 def fmt_hour(h):
     if h == 12: return "12pm"
     if h > 12:  return f"{h - 12}pm"
-    if h == 0:  return "12am"
     return f"{h}am"
 
 
+def ou_result(total_goals, line):
+    """Return 'Over', 'Under', or 'Push'."""
+    if total_goals > line:   return "Over"
+    if total_goals < line:   return "Under"
+    return "Push"
+
+
 def main():
-    print("NHL Day Games (10am–5pm ET): Start Time vs Total Goals")
+    print("NHL Day Games (10am–5pm ET): Over/Under by Start Time")
     print("=" * 56)
     print(f"Seasons: {', '.join(SEASONS.values())}")
     print()
@@ -56,9 +66,8 @@ def main():
     all_rows = []
     for year, label in SEASONS.items():
         rows = download_schedule(year)
-        print(f"  {label}: {len(rows)} games loaded")
+        print(f"  {label}: {len(rows)} games")
         all_rows.extend(rows)
-
     print()
 
     games = []
@@ -66,30 +75,28 @@ def main():
         ts = row.get("game_date_time", "")
         if not ts or ts.endswith("T00:00:00Z"):
             continue
-
         start_utc = parse_utc(ts)
         if not start_utc:
             continue
-
         start_et = utc_to_et(start_utc)
         if not (10 <= start_et.hour <= 17):
             continue
-
         if row.get("status_abstract_game_state") not in ("Final", ""):
             continue
-
         try:
-            total_goals = int(row["away_score"]) + int(row["home_score"])
+            away = int(row["away_score"])
+            home = int(row["home_score"])
         except (ValueError, KeyError):
             continue
 
+        total = away + home
         games.append({
             "date":          start_et.strftime("%Y-%m-%d"),
             "away":          row.get("away_team_name", ""),
             "home":          row.get("home_team_name", ""),
-            "away_score":    int(row["away_score"]),
-            "home_score":    int(row["home_score"]),
-            "total_goals":   total_goals,
+            "away_score":    away,
+            "home_score":    home,
+            "total_goals":   total,
             "start_hour_et": start_et.hour,
             "start_time_et": start_et.strftime("%I:%M %p"),
             "game_type":     row.get("game_type", "REG"),
@@ -98,70 +105,103 @@ def main():
     print(f"Day games with scores: {len(games)}")
     print()
 
-    # Build cross-tab: start_hour × total_goals
-    counts = defaultdict(lambda: defaultdict(int))
-    for g in games:
-        counts[g["start_hour_et"]][g["total_goals"]] += 1
+    LINES = [5.5, 6.0, 6.5]
 
-    start_hours = sorted(counts.keys())
-    all_goal_counts = sorted({g for sh in counts for g in counts[sh]})
+    for line in LINES:
+        label = f"O/U Line  {line}"
+        print("─" * 60)
+        print(f"  {label}")
+        print("─" * 60)
 
-    col_w = 5
-    lw    = 8
-    corner = "Start"
-    header = (
-        f"{corner:<{lw}}"
-        + "".join(f"{g:>{col_w}}" for g in all_goal_counts)
-        + f"{'Total':>{col_w + 1}}"
-    )
-    bar = "─" * len(header)
+        # Group by start hour
+        by_hour = defaultdict(list)
+        for g in games:
+            by_hour[g["start_hour_et"]].append(g)
 
-    print(bar)
-    print("  Start hour  ×  Total goals scored in game")
-    print(bar)
-    print(header)
-    print(bar)
+        col_w = 9
+        lw    = 8
+        corner = "Start"
+        header = f"{corner:<{lw}}{'Over':>{col_w}}{'Under':>{col_w}}{'Push':>{col_w}}{'Total':>{col_w}}  {'Over%':>6}"
+        print(header)
+        print("─" * len(header))
 
-    for sh in start_hours:
-        row_total = sum(counts[sh].values())
-        line = (
-            f"{fmt_hour(sh):<{lw}}"
-            + "".join(f"{counts[sh].get(g, 0):>{col_w}}" for g in all_goal_counts)
-            + f"{row_total:>{col_w + 1}}"
+        totals = {"Over": 0, "Under": 0, "Push": 0, "n": 0}
+
+        for sh in sorted(by_hour.keys()):
+            hour_games = by_hour[sh]
+            res = defaultdict(int)
+            for g in hour_games:
+                r = ou_result(g["total_goals"], line)
+                res[r] += 1
+            n         = len(hour_games)
+            over_pct  = 100 * res["Over"] / n if n else 0
+            print(
+                f"{fmt_hour(sh):<{lw}}"
+                f"{res['Over']:>{col_w}}"
+                f"{res['Under']:>{col_w}}"
+                f"{res['Push']:>{col_w}}"
+                f"{n:>{col_w}}"
+                f"  {over_pct:>5.1f}%"
+            )
+            for k in ("Over", "Under", "Push"):
+                totals[k] += res[k]
+            totals["n"] += n
+
+        print("─" * len(header))
+        overall_over_pct = 100 * totals["Over"] / totals["n"] if totals["n"] else 0
+        print(
+            f"{'All':<{lw}}"
+            f"{totals['Over']:>{col_w}}"
+            f"{totals['Under']:>{col_w}}"
+            f"{totals['Push']:>{col_w}}"
+            f"{totals['n']:>{col_w}}"
+            f"  {overall_over_pct:>5.1f}%"
         )
-        print(line)
-
-    print(bar)
-    col_totals  = {g: sum(counts[sh].get(g, 0) for sh in start_hours) for g in all_goal_counts}
-    grand_total = sum(col_totals.values())
-    print(
-        f"{'Total':<{lw}}"
-        + "".join(f"{col_totals[g]:>{col_w}}" for g in all_goal_counts)
-        + f"{grand_total:>{col_w + 1}}"
-    )
-    print(bar)
-
-    # Per-start-hour breakdown as plain list
-    print()
-    print("Plain breakdown by start time:")
-    print()
-    for sh in start_hours:
-        total = sum(counts[sh].values())
-        avg   = sum(g * counts[sh][g] for g in counts[sh]) / total
-        print(f"  {fmt_hour(sh)} starts  ({total} games, avg {avg:.1f} goals/game)")
-        for g in sorted(counts[sh]):
-            n   = counts[sh][g]
-            pct = 100 * n / total
-            bar_vis = "█" * n
-            print(f"    {g:>2} goals: {n:>3}  ({pct:4.1f}%)  {bar_vis}")
         print()
 
-    # Save
-    with open("nhl_goals_by_start_time.json", "w") as f:
-        json.dump(games, f, indent=2)
-    print(f"Full game list saved to nhl_goals_by_start_time.json")
+    # ── Detailed breakdown for most common line (6.0) ────────────────────────
+    print("─" * 60)
+    print("  Goal-by-goal breakdown vs 6.0 line, per start hour")
+    print("─" * 60)
 
+    by_hour = defaultdict(list)
+    for g in games:
+        by_hour[g["start_hour_et"]].append(g)
+
+    for sh in sorted(by_hour.keys()):
+        hour_games = by_hour[sh]
+        n         = len(hour_games)
+        overs     = sum(1 for g in hour_games if g["total_goals"] > 6.0)
+        unders    = sum(1 for g in hour_games if g["total_goals"] < 6.0)
+        pushes    = sum(1 for g in hour_games if g["total_goals"] == 6.0)
+        avg_goals = sum(g["total_goals"] for g in hour_games) / n
+        over_pct  = 100 * overs / n
+
+        # Count by total goals
+        goal_counts = defaultdict(int)
+        for g in hour_games:
+            goal_counts[g["total_goals"]] += 1
+
+        print(f"\n  {fmt_hour(sh)}  —  {n} games  |  avg {avg_goals:.1f} goals  |  Over(6): {overs} ({over_pct:.0f}%)  Under: {unders}  Push: {pushes}")
+        for goals in sorted(goal_counts):
+            result = "OVER " if goals > 6 else ("PUSH " if goals == 6 else "under")
+            bar    = "█" * goal_counts[goals]
+            pct    = 100 * goal_counts[goals] / n
+            print(f"    {goals:>2}g [{result}]: {goal_counts[goals]:>3}  ({pct:4.1f}%)  {bar}")
+
+    # Save
+    out = []
+    for g in games:
+        g["ou_55"]  = ou_result(g["total_goals"], 5.5)
+        g["ou_60"]  = ou_result(g["total_goals"], 6.0)
+        g["ou_65"]  = ou_result(g["total_goals"], 6.5)
+        out.append(g)
+    with open("nhl_ou_day_games.json", "w") as f:
+        json.dump(out, f, indent=2)
+    print(f"\n\nFull results saved to nhl_ou_day_games.json ({len(out)} games)")
     print()
+    print("Note: actual per-game lines vary by matchup. 5.5/6.0/6.5 cover")
+    print("the vast majority of NHL regular-season totals.")
     print("Data: sportsdataverse/fastRhockey-data · All times Eastern")
 
 
